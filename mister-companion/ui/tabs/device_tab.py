@@ -2,8 +2,8 @@ import sys
 
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QLabel, QPushButton, QMessageBox, QProgressBar
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
+    QLabel, QPushButton, QMessageBox, QProgressBar, QSizePolicy
 )
 
 from ui.scaling import set_text_button_min_width
@@ -21,6 +21,10 @@ from core.device_actions import (
     return_to_menu_remote,
 )
 from core.share_opener import open_local_folder, open_mister_share
+from core.scripts_actions import get_scripts_status, get_scripts_status_local, remove_static_wallpaper
+from core.scripts_static_wallpaper import get_static_wallpaper_state_local, remove_static_wallpaper_local
+from ui.dialogs.static_wallpaper_dialog import StaticWallpaperDialog
+from ui.update_all_runner import UpdateAllOutputDialog, prepare_update_all_task
 
 
 class DeviceStatusWorker(QThread):
@@ -48,12 +52,26 @@ class DeviceStatusWorker(QThread):
                     except Exception as e:
                         smb_error = str(e)
 
+                update_all_installed = False
+                static_wallpaper_active = False
+                if self.sd_root:
+                    try:
+                        update_all_installed = bool(get_scripts_status_local(self.sd_root).update_all_installed)
+                    except Exception:
+                        update_all_installed = False
+                    try:
+                        static_wallpaper_active = bool(get_static_wallpaper_state_local(self.sd_root).get("active"))
+                    except Exception:
+                        static_wallpaper_active = False
+
                 self.result.emit(
                     {
                         "offline": True,
                         "sd_info": sd_info,
                         "smb_enabled": smb_enabled,
                         "smb_error": smb_error,
+                        "update_all_installed": update_all_installed,
+                        "static_wallpaper_active": static_wallpaper_active,
                     }
                 )
                 return
@@ -62,6 +80,13 @@ class DeviceStatusWorker(QThread):
             usb_info = get_usb_storage_info(self.connection)
             smb_enabled = is_smb_enabled(self.connection)
             now_playing = get_now_playing(self.connection)
+            try:
+                scripts_status = get_scripts_status(self.connection)
+                update_all_installed = bool(scripts_status.update_all_installed)
+                static_wallpaper_active = bool(scripts_status.static_wallpaper_active)
+            except Exception:
+                update_all_installed = False
+                static_wallpaper_active = False
 
             self.result.emit(
                 {
@@ -70,6 +95,8 @@ class DeviceStatusWorker(QThread):
                     "usb_info": usb_info,
                     "smb_enabled": smb_enabled,
                     "now_playing": now_playing,
+                    "update_all_installed": update_all_installed,
+                    "static_wallpaper_active": static_wallpaper_active,
                 }
             )
 
@@ -107,7 +134,9 @@ class DeviceTab(QWidget):
         self.storage_bar.setRange(0, 100)
         self.storage_bar.setValue(0)
         self.storage_bar.setTextVisible(False)
-        self.storage_bar.setFixedWidth(500)
+        self.storage_bar.setMinimumWidth(220)
+        self.storage_bar.setMaximumWidth(460)
+        self.storage_bar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         self.storage_label = QLabel("--")
         self.storage_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -119,7 +148,9 @@ class DeviceTab(QWidget):
         self.usb_bar.setRange(0, 100)
         self.usb_bar.setValue(0)
         self.usb_bar.setTextVisible(False)
-        self.usb_bar.setFixedWidth(500)
+        self.usb_bar.setMinimumWidth(220)
+        self.usb_bar.setMaximumWidth(460)
+        self.usb_bar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         self.usb_label = QLabel("Checking...")
         self.usb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -128,21 +159,13 @@ class DeviceTab(QWidget):
         set_text_button_min_width(self.refresh_button, 120)
         storage_layout.addWidget(self.sd_title_label)
 
-        sd_bar_row = QHBoxLayout()
-        sd_bar_row.addStretch()
-        sd_bar_row.addWidget(self.storage_bar)
-        sd_bar_row.addStretch()
-        storage_layout.addLayout(sd_bar_row)
+        storage_layout.addWidget(self.storage_bar, 0, Qt.AlignmentFlag.AlignCenter)
 
         storage_layout.addWidget(self.storage_label)
         storage_layout.addSpacing(8)
         storage_layout.addWidget(self.usb_title_label)
 
-        usb_bar_row = QHBoxLayout()
-        usb_bar_row.addStretch()
-        usb_bar_row.addWidget(self.usb_bar)
-        usb_bar_row.addStretch()
-        storage_layout.addLayout(usb_bar_row)
+        storage_layout.addWidget(self.usb_bar, 0, Qt.AlignmentFlag.AlignCenter)
 
         storage_layout.addWidget(self.usb_label)
 
@@ -160,50 +183,88 @@ class DeviceTab(QWidget):
         sharing_layout.setSpacing(14)
 
         self.smb_status_label = QLabel(
-            "Remote Access: Unknown" if sys.platform == "darwin" else "SMB: Unknown"
+            "SMB: Unknown"
         )
         self.smb_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        sharing_buttons_row = QHBoxLayout()
-        sharing_buttons_row.setSpacing(24)
+        sharing_buttons_row = QVBoxLayout()
+        sharing_buttons_row.setSpacing(8)
 
         self.enable_smb_button = QPushButton(
-            "Enable Access" if sys.platform == "darwin" else "Enable SMB"
+            "Enable SMB"
         )
         self.disable_smb_button = QPushButton(
-            "Disable Access" if sys.platform == "darwin" else "Disable SMB"
+            "Disable SMB"
         )
         self.open_share_button = QPushButton(self.open_share_button_text())
 
-        set_text_button_min_width(self.enable_smb_button, 170)
-        set_text_button_min_width(self.disable_smb_button, 170)
-        set_text_button_min_width(self.open_share_button, 170)
-        sharing_buttons_row.addStretch()
-        sharing_buttons_row.addWidget(self.enable_smb_button)
-        sharing_buttons_row.addWidget(self.disable_smb_button)
-        sharing_buttons_row.addWidget(self.open_share_button)
-        sharing_buttons_row.addStretch()
+        for button in (self.enable_smb_button, self.disable_smb_button, self.open_share_button):
+            set_text_button_min_width(button, 160)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            sharing_buttons_row.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
 
         sharing_layout.addWidget(self.smb_status_label)
         sharing_layout.addLayout(sharing_buttons_row)
 
         sharing_group.setLayout(sharing_layout)
 
+        self.static_wallpaper_group = QGroupBox("Static Wallpaper")
+        static_wallpaper_layout = QVBoxLayout()
+        static_wallpaper_layout.setContentsMargins(16, 18, 16, 18)
+        static_wallpaper_layout.setSpacing(10)
+
+        self.static_wallpaper_status_label = QLabel("Static wallpaper: Unknown")
+        self.static_wallpaper_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        static_wallpaper_buttons_row = QVBoxLayout()
+        static_wallpaper_buttons_row.setSpacing(8)
+        self.set_static_wallpaper_button = QPushButton("Set Static Wallpaper")
+        self.remove_static_wallpaper_button = QPushButton("Remove Static Wallpaper")
+        for button in (self.set_static_wallpaper_button, self.remove_static_wallpaper_button):
+            set_text_button_min_width(button, 170)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            static_wallpaper_buttons_row.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
+
+        static_wallpaper_layout.addWidget(self.static_wallpaper_status_label)
+        static_wallpaper_layout.addLayout(static_wallpaper_buttons_row)
+        self.static_wallpaper_group.setLayout(static_wallpaper_layout)
+
+        self.update_all_group = QGroupBox("Updates")
+        update_all_layout = QVBoxLayout()
+        update_all_layout.setContentsMargins(16, 18, 16, 18)
+        update_all_layout.setSpacing(10)
+
+        self.update_all_status_label = QLabel("update_all: Unknown")
+        self.update_all_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        update_all_buttons_row = QVBoxLayout()
+        update_all_buttons_row.setSpacing(8)
+
+        self.run_update_all_button = QPushButton("Run Update All")
+        self.configure_update_all_button = QPushButton("Configure")
+        for button in (self.run_update_all_button, self.configure_update_all_button):
+            set_text_button_min_width(button, 150)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            update_all_buttons_row.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
+
+        update_all_layout.addWidget(self.update_all_status_label)
+        update_all_layout.addLayout(update_all_buttons_row)
+        self.update_all_group.setLayout(update_all_layout)
+        self.update_all_group.setVisible(False)
+
         power_group = QGroupBox("Power")
         power_layout = QVBoxLayout()
         power_layout.setContentsMargins(16, 18, 16, 18)
 
-        reboot_row = QHBoxLayout()
-        reboot_row.setSpacing(16)
+        reboot_row = QVBoxLayout()
+        reboot_row.setSpacing(8)
 
         self.return_to_menu_button = QPushButton("Return to Menu")
-        set_text_button_min_width(self.return_to_menu_button, 160)
         self.reboot_button = QPushButton("Reboot MiSTer")
-        set_text_button_min_width(self.reboot_button, 160)
-        reboot_row.addStretch()
-        reboot_row.addWidget(self.return_to_menu_button)
-        reboot_row.addWidget(self.reboot_button)
-        reboot_row.addStretch()
+        for button in (self.return_to_menu_button, self.reboot_button):
+            set_text_button_min_width(button, 150)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            reboot_row.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
 
         power_layout.addLayout(reboot_row)
         power_group.setLayout(power_layout)
@@ -224,12 +285,22 @@ class DeviceTab(QWidget):
 
         self.now_playing_group.setLayout(now_playing_layout)
         self.now_playing_group.setVisible(False)
+        if hasattr(self, "update_all_group"):
+            self.update_all_group.setVisible(False)
 
         main_layout.addWidget(storage_group)
-        main_layout.addWidget(sharing_group)
-        main_layout.addWidget(power_group)
-        main_layout.addWidget(self.now_playing_group)
+
+        cards_grid = QGridLayout()
+        cards_grid.setSpacing(18)
+        cards_grid.addWidget(sharing_group, 0, 0)
+        cards_grid.addWidget(self.static_wallpaper_group, 0, 1)
+        cards_grid.addWidget(power_group, 1, 0)
+        cards_grid.addWidget(self.update_all_group, 1, 1)
+        cards_grid.setColumnStretch(0, 1)
+        cards_grid.setColumnStretch(1, 1)
+        main_layout.addLayout(cards_grid)
         main_layout.addStretch()
+        main_layout.addWidget(self.now_playing_group)
 
         self.setLayout(main_layout)
 
@@ -239,6 +310,10 @@ class DeviceTab(QWidget):
         self.open_share_button.clicked.connect(self.open_share)
         self.return_to_menu_button.clicked.connect(self.return_to_menu)
         self.reboot_button.clicked.connect(self.reboot_device)
+        self.run_update_all_button.clicked.connect(self.run_update_all)
+        self.configure_update_all_button.clicked.connect(self.configure_update_all)
+        self.set_static_wallpaper_button.clicked.connect(self.set_static_wallpaper)
+        self.remove_static_wallpaper_button.clicked.connect(self.remove_static_wallpaper_action)
 
     def open_share_button_text(self):
         if sys.platform == "darwin":
@@ -281,9 +356,7 @@ class DeviceTab(QWidget):
             self.usb_label.setStyleSheet("color: #1e88e5; font-weight: bold;")
 
         self.smb_status_label.setText(
-            "Remote Access: Refreshing..."
-            if sys.platform == "darwin"
-            else "SMB: Refreshing..."
+            "SMB: Refreshing..."
         )
         self.smb_status_label.setStyleSheet("color: #1e88e5; font-weight: bold;")
 
@@ -346,10 +419,10 @@ class DeviceTab(QWidget):
         self.open_share_button.setEnabled(False)
 
         self.enable_smb_button.setText(
-            "Enable Access" if sys.platform == "darwin" else "Enable SMB"
+            "Enable SMB"
         )
         self.disable_smb_button.setText(
-            "Disable Access" if sys.platform == "darwin" else "Disable SMB"
+            "Disable SMB"
         )
         self.open_share_button.setText(self.open_share_button_text())
 
@@ -371,12 +444,14 @@ class DeviceTab(QWidget):
         self.disable_smb_button.setEnabled(False)
         self.open_share_button.setEnabled(False)
         self.reboot_button.setEnabled(False)
+        self.set_static_wallpaper_button.setEnabled(False)
+        self.remove_static_wallpaper_button.setEnabled(False)
 
         self.enable_smb_button.setText(
-            "Enable Access" if sys.platform == "darwin" else "Enable SMB"
+            "Enable SMB"
         )
         self.disable_smb_button.setText(
-            "Disable Access" if sys.platform == "darwin" else "Disable SMB"
+            "Disable SMB"
         )
         self.open_share_button.setText(self.open_share_button_text())
 
@@ -399,12 +474,16 @@ class DeviceTab(QWidget):
         self.usb_label.setText("--")
         self.usb_label.setStyleSheet("")
         self.smb_status_label.setText(
-            "Remote Access: Unknown" if sys.platform == "darwin" else "SMB: Unknown"
+            "SMB: Unknown"
         )
         self.smb_status_label.setStyleSheet("")
+        self.static_wallpaper_status_label.setText("Static wallpaper: Unknown")
+        self.static_wallpaper_status_label.setStyleSheet("")
 
         self.now_playing_summary_label.setText("")
         self.now_playing_group.setVisible(False)
+        if hasattr(self, "update_all_group"):
+            self.update_all_group.setVisible(False)
 
     def apply_offline_state(self, lightweight=True):
         self.refresh_timer.stop()
@@ -418,10 +497,10 @@ class DeviceTab(QWidget):
         self.reboot_button.setToolTip("Unavailable in Offline Mode because it requires a running MiSTer.")
 
         self.enable_smb_button.setText(
-            "Enable Access on Boot" if sys.platform == "darwin" else "Enable SMB on Boot"
+            "Enable SMB on Boot"
         )
         self.disable_smb_button.setText(
-            "Disable Access on Boot" if sys.platform == "darwin" else "Disable SMB on Boot"
+            "Disable SMB on Boot"
         )
         self.open_share_button.setText("Open SD Card")
 
@@ -439,11 +518,15 @@ class DeviceTab(QWidget):
         self.open_share_button.setEnabled(has_sd_root)
         self.enable_smb_button.setEnabled(has_sd_root)
         self.disable_smb_button.setEnabled(has_sd_root)
+        self.set_static_wallpaper_button.setEnabled(has_sd_root)
+        self.remove_static_wallpaper_button.setEnabled(False)
 
         self.show_usb_storage(False)
 
         self.now_playing_summary_label.setText("")
         self.now_playing_group.setVisible(False)
+        if hasattr(self, "update_all_group"):
+            self.update_all_group.setVisible(False)
 
         if lightweight:
             if not sd_root:
@@ -452,14 +535,14 @@ class DeviceTab(QWidget):
                 self.storage_label.setText("Offline Mode: No SD card selected")
                 self.storage_label.setStyleSheet("")
                 self.smb_status_label.setText(
-                    "Remote Access Startup: No SD card selected"
-                    if sys.platform == "darwin"
-                    else "SMB Startup: No SD card selected"
+                    "SMB Startup: No SD card selected"
                 )
                 self.smb_status_label.setStyleSheet("color: #f39c12;")
                 self.enable_smb_button.setEnabled(False)
                 self.disable_smb_button.setEnabled(False)
                 self.open_share_button.setEnabled(False)
+                self.static_wallpaper_status_label.setText("Static wallpaper: No SD card selected")
+                self.static_wallpaper_status_label.setStyleSheet("color: #f39c12;")
             return
 
         self.refresh_info()
@@ -530,9 +613,7 @@ class DeviceTab(QWidget):
             self.storage_label.setText("Unable to read selected SD card storage")
             self.storage_label.setStyleSheet("")
             self.smb_status_label.setText(
-                "Remote Access Startup: Unknown"
-                if sys.platform == "darwin"
-                else "SMB Startup: Unknown"
+                "SMB Startup: Unknown"
             )
             self.smb_status_label.setStyleSheet("color: #f39c12;")
             self.refresh_button.setEnabled(True)
@@ -568,12 +649,12 @@ class DeviceTab(QWidget):
 
         self.refresh_button.setEnabled(True)
         self.open_share_button.setEnabled(bool(self.get_offline_sd_root()))
+        self.apply_update_all_status(bool(result.get("update_all_installed")))
+        self.apply_static_wallpaper_status(bool(result.get("static_wallpaper_active")))
 
         if smb_error:
             self.smb_status_label.setText(
-                "Remote Access Startup: Unknown"
-                if sys.platform == "darwin"
-                else "SMB Startup: Unknown"
+                "SMB Startup: Unknown"
             )
             self.smb_status_label.setStyleSheet("color: #f39c12;")
             self.enable_smb_button.setEnabled(True)
@@ -582,18 +663,14 @@ class DeviceTab(QWidget):
 
         if smb_enabled:
             self.smb_status_label.setText(
-                "Remote Access Startup: Enabled ✓"
-                if sys.platform == "darwin"
-                else "SMB Startup: Enabled ✓"
+                "SMB Startup: Enabled ✓"
             )
             self.smb_status_label.setStyleSheet("color: #00aa00;")
             self.enable_smb_button.setEnabled(False)
             self.disable_smb_button.setEnabled(True)
         else:
             self.smb_status_label.setText(
-                "Remote Access Startup: Disabled"
-                if sys.platform == "darwin"
-                else "SMB Startup: Disabled"
+                "SMB Startup: Disabled"
             )
             self.smb_status_label.setStyleSheet("color: #cc0000;")
             self.enable_smb_button.setEnabled(True)
@@ -637,9 +714,7 @@ class DeviceTab(QWidget):
 
         if smb_enabled:
             self.smb_status_label.setText(
-                "Remote Access: Enabled ✓"
-                if sys.platform == "darwin"
-                else "SMB: Enabled ✓"
+                "SMB: Enabled ✓"
             )
             self.smb_status_label.setStyleSheet("color: #00aa00;")
             self.enable_smb_button.setEnabled(False)
@@ -647,14 +722,15 @@ class DeviceTab(QWidget):
             self.open_share_button.setEnabled(True)
         else:
             self.smb_status_label.setText(
-                "Remote Access: Disabled"
-                if sys.platform == "darwin"
-                else "SMB: Disabled"
+                "SMB: Disabled"
             )
             self.smb_status_label.setStyleSheet("color: #cc0000;")
             self.enable_smb_button.setEnabled(True)
             self.disable_smb_button.setEnabled(False)
             self.open_share_button.setEnabled(False)
+
+        self.apply_update_all_status(bool(result.get("update_all_installed")))
+        self.apply_static_wallpaper_status(bool(result.get("static_wallpaper_active")))
 
         now_playing = result.get("now_playing") or {}
 
@@ -664,6 +740,106 @@ class DeviceTab(QWidget):
         else:
             self.now_playing_summary_label.setText(now_playing.get("summary", ""))
             self.now_playing_group.setVisible(True)
+
+
+    def apply_static_wallpaper_status(self, active: bool):
+        self.set_static_wallpaper_button.setEnabled(True if self.is_offline_mode() else self.connection.is_connected())
+        self.remove_static_wallpaper_button.setEnabled(bool(active))
+        if active:
+            self.static_wallpaper_status_label.setText("Static wallpaper: Active ✓")
+            self.static_wallpaper_status_label.setStyleSheet("color: #00aa00;")
+        else:
+            self.static_wallpaper_status_label.setText("Static wallpaper: Not active")
+            self.static_wallpaper_status_label.setStyleSheet("color: gray;")
+
+    def set_static_wallpaper(self):
+        if self.is_offline_mode():
+            sd_root = self.get_offline_sd_root()
+            if not sd_root:
+                QMessageBox.warning(self, "Static Wallpaper", "Select an Offline SD Card folder first.")
+                return
+            dialog = StaticWallpaperDialog(connection=None, parent=self, sd_root=sd_root)
+            if dialog.exec():
+                self.refresh_info()
+            return
+
+        if not self.connection.is_connected():
+            QMessageBox.warning(self, "Static Wallpaper", "Connect to a MiSTer first.")
+            return
+        dialog = StaticWallpaperDialog(self.connection, self)
+        if dialog.exec():
+            self.refresh_info()
+
+    def remove_static_wallpaper_action(self):
+        if self.is_offline_mode():
+            sd_root = self.get_offline_sd_root()
+            if not sd_root:
+                QMessageBox.warning(self, "Static Wallpaper", "Select an Offline SD Card folder first.")
+                return
+            confirm = QMessageBox.question(self, "Remove Static Wallpaper", "Remove the current static wallpaper from the Offline SD Card?")
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                remove_static_wallpaper_local(sd_root)
+                self.refresh_info()
+            except Exception as e:
+                QMessageBox.critical(self, "Static Wallpaper", str(e))
+            return
+
+        if not self.connection.is_connected():
+            QMessageBox.warning(self, "Static Wallpaper", "Connect to a MiSTer first.")
+            return
+        confirm = QMessageBox.question(self, "Remove Static Wallpaper", "Remove the current static wallpaper from the MiSTer?")
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            remove_static_wallpaper(self.connection, reload_menu=True)
+            self.refresh_info()
+        except Exception as e:
+            QMessageBox.critical(self, "Static Wallpaper", str(e))
+
+    def apply_update_all_status(self, installed: bool):
+        if not hasattr(self, "update_all_group"):
+            return
+
+        self.update_all_group.setVisible(installed)
+        self.run_update_all_button.setEnabled(installed)
+        self.configure_update_all_button.setEnabled(installed)
+
+        if not installed:
+            self.update_all_status_label.setText("update_all: Not installed")
+            self.update_all_status_label.setStyleSheet("")
+            return
+
+        if self.is_offline_mode():
+            self.update_all_status_label.setText("update_all: Installed on selected SD card ✓")
+        else:
+            self.update_all_status_label.setText("update_all: Installed ✓")
+        self.update_all_status_label.setStyleSheet("color: #00aa00;")
+
+    def run_update_all(self):
+        scripts_tab = getattr(self.main_window, "scripts_tab", None)
+        if scripts_tab is None:
+            QMessageBox.warning(self, "Update All", "Scripts backend is not available.")
+            return
+        scripts_tab.update_all_installed = True
+        task = prepare_update_all_task(self.main_window, parent=self)
+        if task is None:
+            return
+        dialog = UpdateAllOutputDialog(self.main_window, task, parent=self)
+        self.update_all_output_dialog = dialog
+        dialog.finished.connect(self.refresh_info)
+        dialog.show()
+        dialog.start()
+
+    def configure_update_all(self):
+        scripts_tab = getattr(self.main_window, "scripts_tab", None)
+        if scripts_tab is None:
+            QMessageBox.warning(self, "Update All", "Scripts backend is not available.")
+            return
+        scripts_tab.update_all_installed = True
+        scripts_tab.configure_update_all()
+        self.refresh_info()
 
     def refresh_offline_storage(self):
         sd_root = self.get_offline_sd_root()
@@ -693,9 +869,7 @@ class DeviceTab(QWidget):
 
         if not sd_root:
             self.smb_status_label.setText(
-                "Remote Access Startup: No SD card selected"
-                if sys.platform == "darwin"
-                else "SMB Startup: No SD card selected"
+                "SMB Startup: No SD card selected"
             )
             self.smb_status_label.setStyleSheet("color: #f39c12;")
             self.enable_smb_button.setEnabled(False)
@@ -709,9 +883,7 @@ class DeviceTab(QWidget):
             smb_enabled = is_smb_enabled_offline(sd_root)
         except Exception:
             self.smb_status_label.setText(
-                "Remote Access Startup: Unknown"
-                if sys.platform == "darwin"
-                else "SMB Startup: Unknown"
+                "SMB Startup: Unknown"
             )
             self.smb_status_label.setStyleSheet("color: #f39c12;")
             self.enable_smb_button.setEnabled(True)
@@ -720,18 +892,14 @@ class DeviceTab(QWidget):
 
         if smb_enabled:
             self.smb_status_label.setText(
-                "Remote Access Startup: Enabled ✓"
-                if sys.platform == "darwin"
-                else "SMB Startup: Enabled ✓"
+                "SMB Startup: Enabled ✓"
             )
             self.smb_status_label.setStyleSheet("color: #00aa00;")
             self.enable_smb_button.setEnabled(False)
             self.disable_smb_button.setEnabled(True)
         else:
             self.smb_status_label.setText(
-                "Remote Access Startup: Disabled"
-                if sys.platform == "darwin"
-                else "SMB Startup: Disabled"
+                "SMB Startup: Disabled"
             )
             self.smb_status_label.setStyleSheet("color: #cc0000;")
             self.enable_smb_button.setEnabled(True)
@@ -784,7 +952,7 @@ class DeviceTab(QWidget):
 
         if smb_enabled:
             self.smb_status_label.setText(
-                "Remote Access: Enabled ✓" if sys.platform == "darwin" else "SMB: Enabled ✓"
+                "SMB: Enabled ✓"
             )
             self.smb_status_label.setStyleSheet("color: #00aa00;")
             self.enable_smb_button.setEnabled(False)
@@ -792,7 +960,7 @@ class DeviceTab(QWidget):
             self.open_share_button.setEnabled(True)
         else:
             self.smb_status_label.setText(
-                "Remote Access: Disabled" if sys.platform == "darwin" else "SMB: Disabled"
+                "SMB: Disabled"
             )
             self.smb_status_label.setStyleSheet("color: #cc0000;")
             self.enable_smb_button.setEnabled(True)
@@ -828,11 +996,9 @@ class DeviceTab(QWidget):
 
         reboot_now = QMessageBox.question(
             self,
-            "Remote Access Enabled" if sys.platform == "darwin" else "SMB Enabled",
+            "SMB Enabled",
             (
-                "Remote Access has been enabled.\n\nA reboot is required.\n\nReboot now?"
-                if sys.platform == "darwin"
-                else "SMB has been enabled.\n\nA reboot is required.\n\nReboot now?"
+                "SMB has been enabled.\n\nA reboot is required.\n\nReboot now?"
             ),
         )
 
@@ -855,11 +1021,9 @@ class DeviceTab(QWidget):
 
         reboot_now = QMessageBox.question(
             self,
-            "Remote Access Disabled" if sys.platform == "darwin" else "SMB Disabled",
+            "SMB Disabled",
             (
-                "Remote Access has been disabled.\n\nA reboot is required.\n\nReboot now?"
-                if sys.platform == "darwin"
-                else "SMB has been disabled.\n\nA reboot is required.\n\nReboot now?"
+                "SMB has been disabled.\n\nA reboot is required.\n\nReboot now?"
             ),
         )
 
@@ -889,12 +1053,9 @@ class DeviceTab(QWidget):
 
         QMessageBox.information(
             self,
-            "Remote Access Enabled on Boot" if sys.platform == "darwin" else "SMB Enabled on Boot",
+            "SMB Enabled on Boot",
             (
-                "Remote Access has been enabled on the selected SD card.\n\n"
-                "It will apply the next time MiSTer boots."
-                if sys.platform == "darwin"
-                else "SMB has been enabled on the selected SD card.\n\n"
+                "SMB has been enabled on the selected SD card.\n\n"
                 "It will apply the next time MiSTer boots."
             ),
         )
@@ -921,12 +1082,9 @@ class DeviceTab(QWidget):
 
         QMessageBox.information(
             self,
-            "Remote Access Disabled on Boot" if sys.platform == "darwin" else "SMB Disabled on Boot",
+            "SMB Disabled on Boot",
             (
-                "Remote Access has been disabled on the selected SD card.\n\n"
-                "It will apply the next time MiSTer boots."
-                if sys.platform == "darwin"
-                else "SMB has been disabled on the selected SD card.\n\n"
+                "SMB has been disabled on the selected SD card.\n\n"
                 "It will apply the next time MiSTer boots."
             ),
         )
@@ -1010,7 +1168,6 @@ class DeviceTab(QWidget):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-        self.apply_disconnected_state()
         self.refresh_timer.stop()
 
         try:
@@ -1020,7 +1177,7 @@ class DeviceTab(QWidget):
 
         try:
             self.connection.reboot()
-            QTimer.singleShot(7000, self.main_window.start_reboot_reconnect_polling)
+            self.main_window.start_reboot_reconnect_polling()
         except Exception as e:
             QMessageBox.critical(self, "Reboot Failed", str(e))
             return

@@ -12,13 +12,55 @@ It provides a simple interface for common maintenance tasks without needing to u
 
 ## Features
 
-MiSTer Companion uses a tabbed interface to organize functionality.
+MiSTer Companion organizes functionality through a clean interface with selectable menu styles.
+
+The app supports both a modern **Side menu** layout and the classic **Tabs** layout. You can switch between them from the app settings.
+
+### Interface and Customization
+
+- New Side menu layout
+- Classic Tabs layout remains available
+- Switch between Side menu and Tabs from the app settings
+- Custom theme support through simple JSON files
+- Built-in Theme Picker for selecting built-in and custom themes
+- Built-in Auto, Light and Dark themes remain available
+- Custom themes can define background, surface, accent, text and logo preference
+- Custom themes include author metadata for attribution
+- Improved theme handling across icons, buttons, menus and dialogs
+
+### File Browser
+
+- Browse files on your MiSTer over SFTP
+- Open the File Browser from the bottom bar using the Files button
+- Browse `/media/fat`
+- Browse `/media/usb0` when USB storage is connected
+- Upload files and folders
+- Drag and drop files or folders from your computer into the File Browser
+- Download files and folders from the MiSTer
+- Copy, paste and move files or folders
+- Rename files or folders
+- Delete files or folders with confirmation
+- Overwrite warnings for upload, download, copy, move and rename actions
+- Sortable file list columns
+- Resizable file list columns
+- Remembered window size, column widths and sorting
+- Built-in output and progress log for file operations
+- Available when connected to a MiSTer in Online Mode
+
+### Performance and Responsiveness
+
+- Many threading and speed improvements across the app
+- Faster tab and menu switching
+- Improved connected-mode responsiveness
+- Reduced interface blocking during background tasks
+- Cleaner handling of SSH-based actions
+- Improved refresh behavior for status checks and connected features
 
 ### Flash SD
 
 - Download the latest Mr. Fusion release directly from within the app
 - Download the latest SuperStationONE SD Installer release directly from within the app
-- Detect removable drives (Windows and Linux)
+- Detect removable drives on supported platforms
 - Flash SD cards without requiring external tools
 - Simplifies initial MiSTer setup
 
@@ -71,11 +113,19 @@ MiSTer Companion uses a tabbed interface to organize functionality.
 
 ### ZapScripts
 
-- Launch Scripts & Games directly on the MiSTer 
-- Open Bluetooth menu
-- Open MiSTer OSD menu
+- Launch scripts and games directly on the MiSTer
+- Open the Bluetooth menu
+- Open the MiSTer OSD menu
 - Cycle wallpaper
-- Return to MiSTer home
+- Return to the MiSTer home screen
+
+### ZapScraper
+
+- Scrape artwork for use with the Zaparoo Frontend
+- Recalbox Compatibility mode for Recalbox-style artwork layouts
+- Zaparoo Companion mode, specifically made for the Zaparoo Frontend
+- Helps prepare artwork and metadata for a cleaner Zaparoo Frontend experience
+- Supports MiSTer game folders and Zaparoo-related artwork setups
 
 ### SaveManager
 
@@ -84,7 +134,7 @@ MiSTer Companion uses a tabbed interface to organize functionality.
 - Automatic backup retention per device
 - Restore backups to any connected MiSTer
 - Sync saves between multiple MiSTer systems
-- Local Sync Folder for merging newest save files
+- Local Merge Folder for merging newest save files
 - Offline Mode support for working with saves directly from a selected SD card
 
 ### Wallpapers
@@ -101,10 +151,27 @@ MiSTer Companion uses a tabbed interface to organize functionality.
 
 - Install, update and uninstall supported MiSTer extras
 - Offline Mode support for managing supported extras directly from a selected SD card
-- Zaparoo Launcher/UI Beta support
-- RetroAchievement Cores support
-- RetroAchievement Cores configuration editor
+- Install and manage Zaparoo Frontend
+- Install and manage RetroAchievement Cores
+- Configure RetroAchievement Cores directly from MiSTer Companion
+- Install and manage MMS2 Game Boy Core
+- Install and manage 3S-ARM
+- Install and manage Sonic Mania
 - Pico-8 and OpenBOR have moved from Extras to MiSTer Frontier through update_all, because their previous GitHub sources were archived
+
+### Remote
+
+- Control your MiSTer remotely from inside MiSTer Companion
+- Send MiSTer navigation commands without needing a physical controller
+- Use keyboard passthrough to send keyboard input from your computer to the MiSTer
+- Useful for basic menu navigation, text input and quick remote control actions
+
+### Manuals Reader
+
+- Browse manuals stored on your MiSTer
+- Open PDF manuals directly from MiSTer Companion
+- Supports manuals stored in MiSTer documentation folders
+- Useful for quickly checking game manuals from your computer
 
 ### RetroAchievements Viewer
 
@@ -122,16 +189,6 @@ MiSTer Companion uses a tabbed interface to organize functionality.
 - Run update_all directly against the selected SD card
 - Useful for preparing, maintaining or updating a MiSTer SD card from your computer
 
-### General Improvements
-
-- Complete UI overhaul with a more polished look and stronger identity
-- Improved performance and threading while connected to a MiSTer
-- Tabs now load instantly, with helper refresh logic only refreshing affected items
-- Heavier data is loaded from the MiSTer via SSH only when needed
-- The app now remembers window size and position
-- Built-in update checker for new MiSTer Companion releases
-- Added Support and Feedback buttons
-
 ---
 
 ### Pre-Releases
@@ -140,8 +197,7 @@ MiSTer Companion uses a tabbed interface to organize functionality.
 |------|----------|--------|------|
 | MiSTer Companion | Windows x86-64 | [![Build Status](https://github.com/Anime0t4ku/mister-companion/actions/workflows/build.yaml/badge.svg)](https://github.com/Anime0t4ku/mister-companion/actions/workflows/build.yaml) | [Download](https://github.com/Anime0t4ku/mister-companion/releases/download/Pre-release/MiSTer-Companion-Windows-x86_64.zip) |
 | MiSTer Companion | Linux x86-64 | [![Build Status](https://github.com/Anime0t4ku/mister-companion/actions/workflows/build.yaml/badge.svg)](https://github.com/Anime0t4ku/mister-companion/actions/workflows/build.yaml) | [Download](https://github.com/Anime0t4ku/mister-companion/releases/download/Pre-release/MiSTer-Companion-Linux-x86_64.tar.gz) |
-
-macOS users will have to wait just a bit longer for the official release.
+| MiSTer Companion | macOS Apple Silicon | [![Build Status](https://github.com/Anime0t4ku/mister-companion/actions/workflows/build.yaml/badge.svg)](https://github.com/Anime0t4ku/mister-companion/actions/workflows/build.yaml) | [Download](https://github.com/Anime0t4ku/mister-companion/releases/download/Pre-release/MiSTer-Companion-macOS-Apple-Silicon.dmg) |
 
 ---
 
@@ -150,6 +206,25 @@ macOS users will have to wait just a bit longer for the official release.
 After extracting, make the application executable:
 
     chmod +x MiSTer-Companion
+
+---
+
+## macOS Notes
+
+MiSTer Companion for macOS is currently unsigned.
+
+Because of this, macOS may show a warning saying the app cannot be opened because Apple cannot check it for malicious software.
+
+To open it anyway:
+
+1. Open **System Settings**
+2. Go to **Privacy & Security**
+3. Scroll down to the **Security** section
+4. Find the message about **MiSTer Companion** being blocked
+5. Click **Open Anyway**
+6. Confirm by clicking **Open**
+
+You should only need to do this the first time you launch the app.
 
 ---
 

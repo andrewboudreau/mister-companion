@@ -1,12 +1,15 @@
+import re
 import sys
 from pathlib import Path
 from core.open_helpers import open_uri
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QIcon, QPixmap, QRegion
+from PyQt6.QtGui import QIcon, QPalette, QPixmap, QRegion
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -31,7 +34,7 @@ from core.device_profiles import (
     update_device,
 )
 from core.profile_folder_sync import profile_assigned_to_ip, profile_removed, profile_renamed
-from core.theme import apply_theme, resolve_theme_mode
+from core.theme import apply_theme, theme_accent_color, theme_logo_mode, theme_text_color
 from core.updater import (
     check_for_update,
     launch_mc_updater,
@@ -46,12 +49,16 @@ from ui.dialogs.remote_dialog import RemoteDialog
 from ui.dialogs.retroachievements_dialog import RetroAchievementsDialog
 from ui.dialogs.setup_notice_dialog import SetupNoticeDialog
 from ui.dialogs.support_dialog import SupportDialog
+from ui.dialogs.theme_picker_dialog import ThemePickerDialog
+from ui.dialogs.app_settings_dialog import AppSettingsDialog
 from ui.dialogs.changelog_dialog import ChangelogDialog
+from ui.dialogs.file_browser_dialog import FileBrowserDialog
 from ui.dialogs.update_available_dialog import UpdateAvailableDialog
 from ui.tabs.connection_tab import ConnectionTab
 from ui.tabs.device_tab import DeviceTab
 from ui.tabs.extras_tab import ExtrasTab
 from ui.tabs.flash_tab import FlashTab
+from ui.tabs.install_center_tab import InstallCenterTab
 from ui.tabs.mister_settings_tab import MiSTerSettingsTab
 from ui.tabs.savemanager_tab import SaveManagerTab
 from ui.tabs.scripts_tab import ScriptsTab
@@ -74,6 +81,21 @@ FEEDBACK_URL = "https://github.com/Anime0t4ku/mister-companion/issues/new/choose
 
 UI_SCALE_OPTIONS = [75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125]
 DEFAULT_UI_SCALE_PERCENT = 100
+
+
+class UpwardComboBox(QComboBox):
+    def showPopup(self):
+        super().showPopup()
+
+        try:
+            popup = self.view().window()
+            popup_height = popup.height()
+            if popup_height <= 0:
+                popup_height = popup.sizeHint().height()
+            position = self.mapToGlobal(QPoint(0, 0))
+            popup.move(position.x(), position.y() - popup_height)
+        except Exception:
+            pass
 
 
 class UpdateCheckWorker(QThread):
@@ -311,7 +333,11 @@ class MainWindow(QMainWindow):
         self.config_data = load_config()
 
         self.app_mode = APP_MODE_ONLINE
-        self.offline_sd_root = ""
+        self.offline_sd_root = (
+            str(self.config_data.get("offline_sd_root", "") or "").strip()
+            if self.config_data.get("remember_offline_sd_root", False)
+            else ""
+        )
 
         self.connection_check_worker = None
         self.connection_fail_count = 0
@@ -369,9 +395,28 @@ class MainWindow(QMainWindow):
         content_layout.setSpacing(6)
         root_layout.addWidget(content_widget, 1)
 
+        self.content_area = QWidget()
+        self.content_area_layout = QHBoxLayout(self.content_area)
+        self.content_area_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_area_layout.setSpacing(8)
+
+        self.side_menu = QFrame()
+        self.side_menu.setObjectName("SideMenu")
+        self.side_menu_layout = QVBoxLayout(self.side_menu)
+        self.side_menu_layout.setContentsMargins(8, 8, 8, 8)
+        self.side_menu_layout.setSpacing(6)
+        self.side_menu_buttons = []
+        self.side_menu_button_group = QButtonGroup(self)
+        self.side_menu_button_group.setExclusive(True)
+        self.side_menu_button_group.idClicked.connect(self.on_side_menu_clicked)
+        self.side_menu_layout.addStretch()
+
         self.tabs = QTabWidget()
         self.tabs.setIconSize(TAB_ICON_SIZE)
-        content_layout.addWidget(self.tabs)
+
+        self.content_area_layout.addWidget(self.side_menu)
+        self.content_area_layout.addWidget(self.tabs, 1)
+        content_layout.addWidget(self.content_area, 1)
 
         bottom_bar = QHBoxLayout()
         bottom_bar.setContentsMargins(0, 0, 0, 0)
@@ -382,17 +427,11 @@ class MainWindow(QMainWindow):
 
         bottom_bar.addStretch()
 
-        self.check_update_button = QPushButton("Check for Updates")
-        self.check_update_button.clicked.connect(self.check_for_updates_manual)
-        bottom_bar.addWidget(self.check_update_button)
+        self.check_update_button = None
 
-        self.support_button = QPushButton("Support")
-        self.support_button.clicked.connect(self.open_support_dialog)
-        bottom_bar.addWidget(self.support_button)
-
-        self.feedback_button = QPushButton("Feedback")
-        self.feedback_button.clicked.connect(self.open_feedback)
-        bottom_bar.addWidget(self.feedback_button)
+        self.files_button = QPushButton("Files")
+        self.files_button.clicked.connect(self.open_files)
+        bottom_bar.addWidget(self.files_button)
 
         self.remote_button = QPushButton("Remote")
         self.remote_button.clicked.connect(self.open_remote)
@@ -406,15 +445,22 @@ class MainWindow(QMainWindow):
         self.retroachievements_button.clicked.connect(self.open_retroachievements)
         bottom_bar.addWidget(self.retroachievements_button)
 
-        self.scale_combo = QComboBox()
+        self.scale_combo = UpwardComboBox()
         self.scale_combo.setToolTip("UI Scale")
         self.scale_combo.addItems([f"{value}%" for value in UI_SCALE_OPTIONS])
         self.scale_combo.setMinimumWidth(78)
         bottom_bar.addWidget(self.scale_combo)
 
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["Auto", "Light", "Dark"])
-        bottom_bar.addWidget(self.theme_combo)
+        self.theme_button = QPushButton("Theme")
+        self.theme_button.setToolTip("Theme Picker")
+        self.theme_button.clicked.connect(self.open_theme_picker)
+        bottom_bar.addWidget(self.theme_button)
+
+        self.settings_button = QPushButton()
+        self.settings_button.setToolTip("App Settings")
+        self.settings_button.setFixedWidth(34)
+        self.settings_button.clicked.connect(self.open_app_settings)
+        bottom_bar.addWidget(self.settings_button)
 
         content_layout.addLayout(bottom_bar)
 
@@ -423,14 +469,14 @@ class MainWindow(QMainWindow):
 
         self.set_connection_status("Status: Disconnected")
 
-        saved_theme = self.config_data.get("theme_mode", "auto").lower()
+        saved_theme = str(self.config_data.get("theme_mode", "auto") or "auto").strip().lower()
 
         if saved_theme == "purple":
             saved_theme = "dark"
             self.config_data["theme_mode"] = saved_theme
             save_config(self.config_data)
 
-        if saved_theme not in {"auto", "light", "dark"}:
+        if saved_theme not in {"auto", "light", "dark"} and not saved_theme.startswith("custom:"):
             saved_theme = "auto"
             self.config_data["theme_mode"] = saved_theme
             save_config(self.config_data)
@@ -449,10 +495,8 @@ class MainWindow(QMainWindow):
             scale_index = self.scale_combo.findText(f"{DEFAULT_UI_SCALE_PERCENT}%")
         self.scale_combo.setCurrentIndex(max(0, scale_index))
 
-        theme_index_map = {"auto": 0, "light": 1, "dark": 2}
-        self.theme_combo.setCurrentIndex(theme_index_map.get(saved_theme, 0))
+        self.update_theme_button_text()
         self.scale_combo.currentIndexChanged.connect(self.on_ui_scale_changed)
-        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
         self.refresh_theme()
 
         self.flash_tab = FlashTab(self)
@@ -464,6 +508,9 @@ class MainWindow(QMainWindow):
         self.device_tab = DeviceTab(self)
         self.tabs.addTab(self.device_tab, self.tab_icon("device"), "Device")
 
+        self.install_center_tab = InstallCenterTab(self)
+        self.tabs.addTab(self.install_center_tab, self.tab_icon("scripts"), "Install Center")
+
         self.mister_settings_tab = MiSTerSettingsTab(self)
         self.tabs.addTab(
             self.mister_settings_tab,
@@ -472,7 +519,6 @@ class MainWindow(QMainWindow):
         )
 
         self.scripts_tab = ScriptsTab(self)
-        self.tabs.addTab(self.scripts_tab, self.tab_icon("scripts"), "Scripts")
 
         self.zapscripts_tab = ZapScriptsTab(self)
         self.tabs.addTab(
@@ -496,17 +542,15 @@ class MainWindow(QMainWindow):
         )
 
         self.wallpapers_tab = WallpapersTab(self)
-        self.tabs.addTab(
-            self.wallpapers_tab,
-            self.tab_icon("wallpapers"),
-            "Wallpapers",
-        )
 
         self.extras_tab = ExtrasTab(self)
-        self.tabs.addTab(self.extras_tab, self.tab_icon("extras"), "Extras")
 
+        self.build_side_menu()
         self.tabs.setCurrentWidget(self.connection_tab)
+        self.update_side_menu_selection(self.tabs.currentIndex())
+        self.update_side_menu_style()
         self.tabs.currentChanged.connect(self.on_tab_changed)
+        self.apply_menu_style()
 
         self.load_devices()
         self.load_last_device()
@@ -524,6 +568,165 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.apply_window_corner_radius)
         QTimer.singleShot(300, self.show_setup_notice)
         QTimer.singleShot(1500, self.check_for_updates_on_startup)
+
+
+    def tab_entries(self):
+        return [
+            ("Flash SD", "flash_sd"),
+            ("Connection", "connection"),
+            ("Device", "device"),
+            ("Install Center", "scripts"),
+            ("MiSTer Settings", "mister_settings"),
+            ("ZapScripts", "zapscripts"),
+            ("ZapScraper", "zapscripts"),
+            ("SaveManager", "savemanager"),
+        ]
+
+    def current_menu_style(self) -> str:
+        style = str(self.config_data.get("menu_style", "side_menu") or "side_menu").strip().lower()
+        style = style.replace("-", "_").replace(" ", "_")
+
+        if style == "overlay":
+            style = "side_menu"
+
+        if style not in {"side_menu", "tabs"}:
+            style = "side_menu"
+
+        return style
+
+    def build_side_menu(self):
+        if not hasattr(self, "side_menu_layout"):
+            return
+
+        while self.side_menu_layout.count():
+            item = self.side_menu_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self.side_menu_buttons = []
+        max_text_width = 0
+        font_metrics = self.fontMetrics()
+
+        for index, (label, icon_name) in enumerate(self.tab_entries()):
+            button = QPushButton(label)
+            button.setObjectName("SideMenuButton")
+            button.setCheckable(True)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setIcon(self.tab_icon(icon_name))
+            button.setIconSize(TAB_ICON_SIZE)
+            button.setMinimumHeight(34)
+            max_text_width = max(max_text_width, font_metrics.horizontalAdvance(label))
+            self.side_menu_button_group.addButton(button, index)
+            self.side_menu_buttons.append((button, icon_name))
+            self.side_menu_layout.addWidget(button)
+
+        width = max_text_width + 56
+        width = max(132, min(190, width))
+
+        for button, _ in self.side_menu_buttons:
+            button.setFixedWidth(width)
+
+        self.side_menu.setFixedWidth(width + 16)
+        self.side_menu_layout.addStretch()
+        self.update_side_menu_selection(self.tabs.currentIndex() if hasattr(self, "tabs") else 0)
+
+    def refresh_side_menu_icons(self):
+        if not hasattr(self, "side_menu_buttons"):
+            return
+
+        self.update_side_menu_selection(self.tabs.currentIndex() if hasattr(self, "tabs") else 0)
+
+    def side_menu_icon(self, icon_name: str, selected: bool = False) -> QIcon:
+        mode = self.config_data.get("theme_mode", "auto")
+        color = "#ffffff" if selected else theme_accent_color(mode)
+        return self.svg_icon(icon_name, color)
+
+    def update_side_menu_selection(self, index: int):
+        if not hasattr(self, "side_menu_buttons"):
+            return
+
+        for button_index, (button, icon_name) in enumerate(self.side_menu_buttons):
+            selected = button_index == index
+            button.setChecked(selected)
+            button.setIcon(self.side_menu_icon(icon_name, selected=selected))
+
+    def on_side_menu_clicked(self, index: int):
+        if self._closing:
+            return
+
+        if index < 0 or index >= self.tabs.count():
+            return
+
+        self.tabs.setCurrentIndex(index)
+
+
+    def update_side_menu_style(self):
+        if not hasattr(self, "side_menu"):
+            return
+
+        mode = self.config_data.get("theme_mode", "auto")
+        palette = self.palette()
+        button = palette.color(QPalette.ColorRole.Button).name()
+        mid = palette.color(QPalette.ColorRole.Mid).name()
+        text = theme_text_color(mode)
+        accent = theme_accent_color(mode)
+
+        self.side_menu.setStyleSheet(
+            f"""
+            QFrame#SideMenu {{
+                background: transparent;
+                border: none;
+            }}
+
+            QPushButton#SideMenuButton {{
+                text-align: left;
+                padding: 7px 10px;
+                border: 1px solid {mid};
+                border-radius: 8px;
+                background-color: {button};
+                color: {text};
+                font-weight: 600;
+            }}
+
+            QPushButton#SideMenuButton:hover {{
+                border-color: {accent};
+            }}
+
+            QPushButton#SideMenuButton:checked {{
+                background-color: {accent};
+                border-color: {accent};
+                color: #ffffff;
+            }}
+            """
+        )
+
+    def apply_menu_style(self):
+        if not hasattr(self, "tabs") or not hasattr(self, "side_menu"):
+            return
+
+        style = self.current_menu_style()
+        use_side_menu = style == "side_menu"
+
+        self.side_menu.setVisible(use_side_menu)
+        self.tabs.tabBar().setVisible(not use_side_menu)
+
+        if use_side_menu:
+            self.tabs.setStyleSheet(
+                """
+                QTabWidget::pane {
+                    top: 0px;
+                }
+                """
+            )
+        else:
+            self.tabs.setStyleSheet("")
+
+        if hasattr(self, "content_area_layout"):
+            self.content_area_layout.setSpacing(8 if use_side_menu else 0)
+
+        self.update_side_menu_selection(self.tabs.currentIndex())
+        self.update_side_menu_style()
 
     def open_remote(self):
         if self._closing:
@@ -570,6 +773,36 @@ class MainWindow(QMainWindow):
         dialog = RetroAchievementsDialog(self)
         dialog.exec()
 
+    def open_files(self):
+        if self._closing:
+            return
+
+        if self.is_offline_mode():
+            QMessageBox.information(
+                self,
+                "Files",
+                "Files is only available in Online Mode.",
+            )
+            return
+
+        if not self.connection.is_connected():
+            QMessageBox.information(
+                self,
+                "Files",
+                "Connect to a MiSTer first before using Files.",
+            )
+            return
+
+        dialog = FileBrowserDialog(self)
+        dialog.exec()
+
+    def open_app_settings(self):
+        if self._closing:
+            return
+
+        dialog = AppSettingsDialog(self)
+        dialog.exec()
+
     def open_support_dialog(self):
         if self._closing:
             return
@@ -584,7 +817,7 @@ class MainWindow(QMainWindow):
         open_uri(FEEDBACK_URL)
 
     def apply_default_window_size(self):
-        preferred_width = 1100
+        preferred_width = 1240 if self.current_menu_style() == "side_menu" else 1100
         preferred_height = 980
         screen_margin = 80
 
@@ -653,8 +886,16 @@ class MainWindow(QMainWindow):
         if not mode:
             mode = self.config_data.get("theme_mode", "auto")
 
-        resolved_mode = resolve_theme_mode(mode)
-        self.title_bar.set_logo_mode(resolved_mode)
+        logo_mode = theme_logo_mode(mode)
+        self.title_bar.set_logo_mode(logo_mode)
+        self.update_settings_button_icon()
+
+    def update_settings_button_icon(self):
+        if not hasattr(self, "settings_button"):
+            return
+
+        mode = self.config_data.get("theme_mode", "auto")
+        self.settings_button.setIcon(self.svg_icon("settings", theme_text_color(mode)))
 
     def apply_windows_native_corner_radius(self):
         if not sys.platform.startswith("win"):
@@ -893,11 +1134,47 @@ class MainWindow(QMainWindow):
 
         return super().eventFilter(obj, event)
 
-    def tab_icon(self, name: str) -> QIcon:
+    def svg_icon(self, name: str, color: str) -> QIcon:
         path = ASSETS_DIR / f"{name}.svg"
-        if path.exists():
-            return QIcon(str(path))
-        return QIcon()
+        if not path.exists():
+            return QIcon()
+
+        try:
+            svg = path.read_text(encoding="utf-8")
+            color = str(color or "#8b5cf6").strip()
+            svg = svg.replace("currentColor", color)
+            svg = re.sub(r"#[0-9a-fA-F]{6}", color, svg)
+            pixmap = QPixmap()
+            if pixmap.loadFromData(svg.encode("utf-8")):
+                return QIcon(pixmap)
+        except Exception:
+            pass
+
+        return QIcon(str(path))
+
+    def tab_icon(self, name: str) -> QIcon:
+        return self.svg_icon(name, theme_accent_color(self.config_data.get("theme_mode", "auto")))
+
+    def refresh_tab_icons(self):
+        if not hasattr(self, "tabs"):
+            return
+
+        icon_map = {
+            "Flash SD": "flash_sd",
+            "Connection": "connection",
+            "Device": "device",
+            "MiSTer Settings": "mister_settings",
+            "Install Center": "scripts",
+            "ZapScripts": "zapscripts",
+            "ZapScraper": "zapscripts",
+            "SaveManager": "savemanager",
+        }
+
+        for index in range(self.tabs.count()):
+            text = self.tabs.tabText(index)
+            icon_name = icon_map.get(text)
+            if icon_name:
+                self.tabs.setTabIcon(index, self.tab_icon(icon_name))
 
     def is_online_mode(self) -> bool:
         return self.app_mode == APP_MODE_ONLINE
@@ -908,8 +1185,28 @@ class MainWindow(QMainWindow):
     def get_offline_sd_root(self) -> str:
         return self.offline_sd_root
 
+    def should_remember_offline_sd_root(self) -> bool:
+        return bool(self.config_data.get("remember_offline_sd_root", False))
+
+    def set_remember_offline_sd_root(self, remember: bool):
+        self.config_data["remember_offline_sd_root"] = bool(remember)
+
+        if remember:
+            self.config_data["offline_sd_root"] = self.offline_sd_root
+        else:
+            self.config_data["offline_sd_root"] = ""
+
+        save_config(self.config_data)
+
     def set_offline_sd_root(self, path: str):
         self.offline_sd_root = str(path or "").strip()
+
+        if self.should_remember_offline_sd_root():
+            self.config_data["offline_sd_root"] = self.offline_sd_root
+        else:
+            self.config_data["offline_sd_root"] = ""
+
+        save_config(self.config_data)
 
     def switch_to_online_mode(self):
         if self._closing:
@@ -971,6 +1268,11 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "manuals_button"):
             self.manuals_button.setEnabled(self.is_online_mode())
+
+        if hasattr(self, "files_button"):
+            self.files_button.setEnabled(
+                self.is_online_mode() and self.connection.is_connected()
+            )
 
         if hasattr(self, "connection_tab") and hasattr(self.connection_tab, "update_mode_state"):
             self.connection_tab.update_mode_state()
@@ -1098,6 +1400,10 @@ class MainWindow(QMainWindow):
             pass
 
     def closeEvent(self, event):
+        if not self.should_remember_offline_sd_root():
+            self.config_data["offline_sd_root"] = ""
+            save_config(self.config_data)
+
         self.save_window_geometry()
         self._closing = True
 
@@ -1211,8 +1517,20 @@ class MainWindow(QMainWindow):
     def refresh_theme(self):
         mode = self.config_data.get("theme_mode", "auto")
         ui_scale_percent = self.get_ui_scale_percent()
-        apply_theme(self.app, mode, ui_scale_percent)
-        self.update_title_bar_logo(mode)
+        self.setUpdatesEnabled(False)
+        try:
+            apply_theme(self.app, mode, ui_scale_percent)
+            self.update_title_bar_logo(mode)
+            self.update_theme_button_text()
+            self.refresh_tab_icons()
+            self.refresh_side_menu_icons()
+            self.update_side_menu_style()
+            current_widget = self.current_content_widget()
+            if current_widget is not None and hasattr(current_widget, "refresh_theme"):
+                current_widget.refresh_theme()
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def on_ui_scale_changed(self, *_):
         if self._closing:
@@ -1229,13 +1547,46 @@ class MainWindow(QMainWindow):
 
         self.refresh_theme()
 
-    def on_theme_changed(self, *_):
+    def theme_display_name(self, mode: str) -> str:
+        mode = str(mode or "auto").strip().lower()
+        if mode == "auto":
+            return "Auto"
+        if mode == "light":
+            return "Light"
+        if mode == "dark":
+            return "Dark"
+        if mode.startswith("custom:"):
+            try:
+                from core.custom_themes import get_custom_theme
+                theme = get_custom_theme(mode)
+                if theme:
+                    return theme.get("name", "Custom Theme")
+            except Exception:
+                pass
+            return "Custom Theme"
+        return "Auto"
+
+    def update_theme_button_text(self):
+        if not hasattr(self, "theme_button"):
+            return
+
+        self.theme_button.setText(f"Theme: {self.theme_display_name(self.config_data.get('theme_mode', 'auto'))}")
+
+    def open_theme_picker(self):
         if self._closing:
             return
 
-        mode = self.theme_combo.currentText().lower()
+        dialog = ThemePickerDialog(self.config_data.get("theme_mode", "auto"), self)
+        dialog.theme_applied.connect(self.apply_theme_from_picker)
+        dialog.exec()
 
-        if mode not in {"auto", "light", "dark"}:
+    def apply_theme_from_picker(self, mode: str):
+        if self._closing:
+            return
+
+        mode = str(mode or "auto").strip().lower()
+
+        if mode not in {"auto", "light", "dark"} and not mode.startswith("custom:"):
             mode = "auto"
 
         if self.config_data.get("theme_mode") == mode:
@@ -1244,7 +1595,6 @@ class MainWindow(QMainWindow):
 
         self.config_data["theme_mode"] = mode
         save_config(self.config_data)
-
         self.refresh_theme()
 
     def check_for_updates_on_startup(self):
@@ -1255,6 +1605,10 @@ class MainWindow(QMainWindow):
             return
 
         self.startup_update_check_done = True
+
+        if not self.config_data.get("check_updates_on_startup", True):
+            return
+
         self.start_update_check(show_no_update=False, show_errors=False)
 
     def check_for_updates_manual(self):
@@ -1270,8 +1624,9 @@ class MainWindow(QMainWindow):
         if self.update_check_worker is not None and self.update_check_worker.isRunning():
             return
 
-        self.check_update_button.setEnabled(False)
-        self.check_update_button.setText("Checking...")
+        if self.check_update_button is not None:
+            self.check_update_button.setEnabled(False)
+            self.check_update_button.setText("Checking...")
 
         self.update_check_worker = UpdateCheckWorker()
         self.update_check_worker.show_no_update = show_no_update
@@ -1370,8 +1725,9 @@ class MainWindow(QMainWindow):
         if self._closing:
             return
 
-        self.check_update_button.setEnabled(True)
-        self.check_update_button.setText("Check for Updates")
+        if self.check_update_button is not None:
+            self.check_update_button.setEnabled(True)
+            self.check_update_button.setText("Check for Updates")
         self.update_check_worker = None
 
     def _managed_tabs(self):
@@ -1380,12 +1736,10 @@ class MainWindow(QMainWindow):
         for attr_name in (
             "device_tab",
             "mister_settings_tab",
-            "scripts_tab",
-            "extras_tab",
+            "install_center_tab",
             "zapscripts_tab",
             "zapscraper_tab",
             "savemanager_tab",
-            "wallpapers_tab",
             "flash_tab",
         ):
             if hasattr(self, attr_name):
@@ -1434,17 +1788,12 @@ class MainWindow(QMainWindow):
                 return
 
             if force:
-                if hasattr(self, "scripts_tab") and current_widget is self.scripts_tab:
-                    self.scripts_tab.refresh_status()
+                if hasattr(self, "install_center_tab") and current_widget is self.install_center_tab:
+                    self.install_center_tab.refresh_status()
                     return
 
-                if hasattr(self, "extras_tab") and current_widget is self.extras_tab:
-                    self.extras_tab.refresh_status()
-                    return
 
-                if hasattr(self, "wallpapers_tab") and current_widget is self.wallpapers_tab:
-                    self.wallpapers_tab.refresh_status()
-                    return
+
 
                 if hasattr(self, "zapscraper_tab") and current_widget is self.zapscraper_tab:
                     self.zapscraper_tab.refresh_status()
@@ -1463,25 +1812,22 @@ class MainWindow(QMainWindow):
             self.device_tab.refresh_info()
             return
 
-        if hasattr(self, "scripts_tab") and current_widget is self.scripts_tab:
-            self.scripts_tab.refresh_status()
+        if hasattr(self, "install_center_tab") and current_widget is self.install_center_tab:
+            self.install_center_tab.refresh_status()
             return
+
 
         if hasattr(self, "zapscripts_tab") and current_widget is self.zapscripts_tab:
             self.zapscripts_tab.refresh_status()
             return
 
-        if hasattr(self, "extras_tab") and current_widget is self.extras_tab:
-            self.extras_tab.refresh_status()
-            return
 
-        if hasattr(self, "wallpapers_tab") and current_widget is self.wallpapers_tab:
-            self.wallpapers_tab.refresh_status()
-            return
 
     def on_tab_changed(self, index):
         if self._closing:
             return
+
+        self.update_side_menu_selection(index)
 
         current_widget = self.tabs.widget(index)
         if current_widget is None:
